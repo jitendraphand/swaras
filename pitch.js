@@ -67,9 +67,8 @@
         // negative-going zero crossing.
         let pos = 0;
         while (pos < maxLag && nsdf[pos] > 0) pos++;
-        let best = -1;
+        const firstLobe = pos;
         let highest = 0;
-        const peaks = [];
         while (pos < maxLag) {
             while (pos < maxLag && nsdf[pos] <= 0) pos++;
             let peak = pos;
@@ -77,19 +76,26 @@
                 if (nsdf[pos] > nsdf[peak]) peak = pos;
                 pos++;
             }
-            if (peak >= minLag && peak < maxLag && nsdf[peak] >= nsdf[peak + 1]) {
-                peaks.push(peak);
-                if (nsdf[peak] > highest) highest = nsdf[peak];
-            }
+            if (peak >= minLag && peak < maxLag && nsdf[peak] >= nsdf[peak + 1] && nsdf[peak] > highest) highest = nsdf[peak];
         }
-        if (!peaks.length || highest < 0.3) return null;
+        if (highest < 0.3) return null;
 
         // The first peak close to the highest one is the fundamental; later
-        // ones are multiples of the period (octave errors).
+        // ones are multiples of the period (octave errors). Second scan
+        // instead of a list of peaks, so nothing is allocated per frame.
         const threshold = 0.9 * highest;
-        for (const p of peaks) {
-            if (nsdf[p] >= threshold) { best = p; break; }
+        let best = -1;
+        pos = firstLobe;
+        while (pos < maxLag && best < 0) {
+            while (pos < maxLag && nsdf[pos] <= 0) pos++;
+            let peak = pos;
+            while (pos < maxLag && nsdf[pos] > 0) {
+                if (nsdf[pos] > nsdf[peak]) peak = pos;
+                pos++;
+            }
+            if (peak >= minLag && peak < maxLag && nsdf[peak] >= nsdf[peak + 1] && nsdf[peak] >= threshold) best = peak;
         }
+        if (best < 0) return null;
 
         const a = nsdf[best - 1], b = nsdf[best], c = nsdf[best + 1];
         const denom = a - 2 * b + c;
@@ -115,7 +121,14 @@
         constructor(sampleRate, options = {}) {
             this.sampleRate = sampleRate;
             this.opts = Object.assign({}, DEFAULTS, options);
-            this.nsdf = new Float32Array(Math.ceil(sampleRate / this.opts.minFreq) + 2);
+            // The input is band-limited to the singing range, so analysing it
+            // at ~22–24 kHz loses nothing and makes the O(n·lag) search about
+            // four times cheaper than at the 44.1/48 kHz capture rate.
+            this.decimation = Math.max(1, Math.floor(sampleRate / 22050));
+            this.analysisRate = sampleRate / this.decimation;
+            this.nsdf = new Float32Array(Math.ceil(this.analysisRate / this.opts.minFreq) + 2);
+            this.work = null;
+            this.sorted = new Float64Array(5);
             this.setSensitivity(options.sensitivity == null ? 0.5 : options.sensitivity);
             this.reset();
         }
@@ -137,7 +150,7 @@
         }
 
         /**
-         * Analyse one frame captured at `time` (seconds). `buf` is modified.
+         * Analyse one frame captured at `time` (seconds). `buf` may be modified.
          * Returns the tracker state: `voiced` is true while a note is showing
          * (including during a short hold); `fresh` is true only when this frame
          * itself measured the pitch.
@@ -152,7 +165,7 @@
 
             // Hysteresis: a note that's already sounding may get a little quieter.
             const gateDb = Math.max(o.silenceDb, this.floorDb + this.marginDb - (this.voiced ? 6 : 0));
-            const estimate = levelDb > o.silenceDb ? mcleodPitch(buf, this.sampleRate, o.minFreq, o.maxFreq, this.nsdf) : null;
+            const estimate = levelDb > o.silenceDb ? this.estimate(buf) : null;
             const periodic = !!estimate &&
                 estimate.clarity >= (this.voiced ? o.clarityHold : o.clarityOn) &&
                 estimate.freq >= o.minFreq && estimate.freq <= o.maxFreq;
@@ -176,7 +189,7 @@
                 if (this.history.length > 5) this.history.shift();
 
                 if (this.voiced || this.isConsistentOnset()) {
-                    const med = median(this.history);
+                    const med = this.medianOfHistory();
                     if (this.midi == null || Math.abs(med - this.midi) > o.jumpSemitones) this.midi = med;
                     else this.midi += (med - this.midi) * 0.5;
                     this.voiced = true;
@@ -204,18 +217,48 @@
             };
         }
 
-        isConsistentOnset() {
-            const n = this.opts.onsetFrames;
-            if (this.history.length < n) return false;
-            const recent = this.history.slice(-n);
-            return Math.max(...recent) - Math.min(...recent) <= this.opts.jumpSemitones;
+        estimate(buf) {
+            const o = this.opts;
+            const d = this.decimation;
+            if (d === 1) return mcleodPitch(buf, this.sampleRate, o.minFreq, o.maxFreq, this.nsdf);
+            const n = Math.floor(buf.length / d);
+            if (!this.work || this.work.length !== n) this.work = new Float32Array(n);
+            const work = this.work;
+            // Averaging each group of samples is a cheap anti-alias filter.
+            for (let i = 0, j = 0; i < n; i++) {
+                let sum = 0;
+                for (let k = 0; k < d; k++) sum += buf[j++];
+                work[i] = sum / d;
+            }
+            return mcleodPitch(work, this.analysisRate, o.minFreq, o.maxFreq, this.nsdf);
         }
-    }
 
-    function median(values) {
-        const sorted = values.slice().sort((a, b) => a - b);
-        const mid = sorted.length >> 1;
-        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+        isConsistentOnset() {
+            const h = this.history;
+            const n = this.opts.onsetFrames;
+            if (h.length < n) return false;
+            let lo = Infinity;
+            let hi = -Infinity;
+            for (let i = h.length - n; i < h.length; i++) {
+                if (h[i] < lo) lo = h[i];
+                if (h[i] > hi) hi = h[i];
+            }
+            return hi - lo <= this.opts.jumpSemitones;
+        }
+
+        // Insertion sort into a scratch array: no per-frame garbage.
+        medianOfHistory() {
+            const h = this.history;
+            const s = this.sorted;
+            const n = h.length;
+            for (let i = 0; i < n; i++) {
+                let j = i;
+                while (j > 0 && s[j - 1] > h[i]) { s[j] = s[j - 1]; j--; }
+                s[j] = h[i];
+            }
+            const mid = n >> 1;
+            return n % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+        }
     }
 
     const api = { mcleodPitch, PitchTracker, freqToMidi, midiToFreq, midiToName, rmsDb };

@@ -24,6 +24,8 @@ const HOLD_TO_DRAW = 1.0;      // seconds of in-tune singing that completes a sh
 const IN_TUNE_CENTS = 15;
 const CLOSE_CENTS = 30;
 const GAP_BRIDGE = 0.16;       // trace breaks shorter than this (s) are joined up
+const ANALYSIS_INTERVAL = 0.014; // s; caps pitch analysis near 60 Hz on 120/144 Hz screens
+const IDLE_SUSPEND_MS = 30000; // release the audio hardware after this long with nothing playing
 const GRAPH = { low: 46.5, high: 61.5, maxSeconds: 8, gutter: 72, padRight: 16, padY: 14 };
 const CHART_CENTER = (GRAPH.low + GRAPH.high) / 2;
 const FONT = 'Inter, system-ui, sans-serif';
@@ -42,6 +44,7 @@ const els = {
     tuner: $('tuner'),
     tunerNeedle: $('tunerNeedle'),
     tunerText: $('tunerText'),
+    drawnCount: $('drawnCount'),
     shapeCanvas: $('shapeCanvas'),
     traceCanvas: $('traceCanvas'),
     traceEmpty: $('traceEmpty'),
@@ -62,12 +65,13 @@ const els = {
     announcer: $('announcer')
 };
 
-const audio = { ctx: null, master: null, voice: null };
+const audio = { ctx: null, master: null, voice: null, idleTimer: 0 };
 const tone = { index: -1, startedAt: 0, token: 0, scaleTimer: null };
-const mic = { stream: null, nodes: [], analyser: null, buffer: null, tracker: null, starting: false };
-const voice = { result: null, display: null, octaveOffset: 0, lastFreshAt: -Infinity };
+const mic = { stream: null, nodes: [], analyser: null, buffer: null, tracker: null, starting: false, echo: false, analysedAt: -Infinity };
+const voice = { result: null, display: null, octaveOffset: 0, lastFreshAt: -Infinity, label: '', labelAt: -Infinity };
 const trace = { points: [], bars: [], hasContent: false };
-const stage = { index: -1, lastIndex: -1, progress: 0, locked: false, cents: null, sungIndex: -1 };
+const stage = { index: -1, lastIndex: -1, progress: 0, locked: false, cents: null, sungIndex: -1, notice: '', noticeUntil: 0, drawnKey: '' };
+const drawn = new Set(); // notes whose shape has been drawn by voice this session
 const views = { stage: makeView(els.shapeCanvas), trace: makeView(els.traceCanvas) };
 
 // ---------------------------------------------------------------- settings
@@ -106,6 +110,7 @@ async function ensureAudio() {
         audio.master.gain.value = volumeToGain(settings.volume);
         audio.master.connect(audio.ctx.destination);
     }
+    clearTimeout(audio.idleTimer);
     if (audio.ctx.state !== 'running') {
         try {
             await audio.ctx.resume();
@@ -114,6 +119,30 @@ async function ensureAudio() {
         }
     }
     return audio.ctx;
+}
+
+// A running AudioContext keeps the audio hardware awake even when silent, so
+// let it sleep once nothing has played for a while. ensureAudio() wakes it.
+function scheduleIdleSuspend() {
+    clearTimeout(audio.idleTimer);
+    if (!audio.ctx) return;
+    audio.idleTimer = setTimeout(() => {
+        if (audio.voice || mic.analyser || mic.starting || audio.ctx.state !== 'running') return;
+        audio.ctx.suspend().catch(() => {});
+    }, IDLE_SUSPEND_MS);
+}
+
+// The browser can pause audio on its own (phone call, tab put to sleep). If
+// something should be sounding or listening, the next gesture wakes it.
+function reviveAudio() {
+    if (!audio.ctx || audio.ctx.state === 'running' || audio.ctx.state === 'closed') return;
+    if (audio.voice || mic.analyser) audio.ctx.resume().catch(() => {});
+}
+
+function showNotice(text) {
+    stage.notice = text;
+    stage.noticeUntil = clock() + 4;
+    requestFrame();
 }
 
 function volumeToGain(v) {
@@ -128,14 +157,17 @@ async function startTone(index, keepScale = false) {
     try {
         ctx = await ensureAudio();
     } catch (err) {
-        els.stageDetail.textContent = err.message;
+        stopScale();
+        showNotice(err.message);
         return;
     }
     if (token !== tone.token) return; // stopped or replaced while audio was starting
     if (ctx.state !== 'running') {
-        els.stageDetail.textContent = 'Tap again to enable sound.';
+        stopAll(); // don't leave a silent scale running or a key lit
+        showNotice('Sound is blocked — tap a note again to enable it.');
         return;
     }
+    stage.notice = '';
 
     releaseVoice();
     const note = NOTES[index];
@@ -160,8 +192,14 @@ function releaseVoice() {
     if (!v) return;
     audio.voice = null;
     const now = audio.ctx.currentTime;
-    v.gain.gain.cancelScheduledValues(now);
-    v.gain.gain.setValueAtTime(v.gain.gain.value, now);
+    // cancelAndHoldAtTime freezes the attack ramp where it is; reading .value
+    // mid-ramp isn't reliable everywhere and would click.
+    if (v.gain.gain.cancelAndHoldAtTime) {
+        v.gain.gain.cancelAndHoldAtTime(now);
+    } else {
+        v.gain.gain.cancelScheduledValues(now);
+        v.gain.gain.setValueAtTime(v.gain.gain.value, now);
+    }
     v.gain.gain.setTargetAtTime(0, now, 0.02);
     v.osc.onended = () => {
         v.osc.disconnect();
@@ -174,6 +212,7 @@ function stopTone() {
     tone.token++;
     releaseVoice();
     setTone(-1);
+    scheduleIdleSuspend();
 }
 
 function stopAll() {
@@ -238,6 +277,7 @@ async function startListening() {
     renderMicButton();
     setMicStatus('Waiting for microphone permission…');
     let stream = null;
+    const echo = settings.echoCancel;
     try {
         const ctx = await ensureAudio();
         // The browser's voice-call processing is built for speech: noise
@@ -246,7 +286,7 @@ async function startListening() {
         // and do our own noise handling instead.
         stream = await navigator.mediaDevices.getUserMedia({
             audio: {
-                echoCancellation: settings.echoCancel,
+                echoCancellation: echo,
                 noiseSuppression: false,
                 autoGainControl: false
             }
@@ -271,13 +311,18 @@ async function startListening() {
         sink.connect(ctx.destination);
 
         mic.stream = stream;
+        mic.echo = echo;
+        mic.analysedAt = -Infinity;
         mic.nodes = [source, highpass, lowpass, analyser, sink];
         mic.analyser = analyser;
         mic.buffer = new Float32Array(analyser.fftSize);
         mic.tracker = new PitchTracker(ctx.sampleRate, { sensitivity: settings.sensitivity });
         voice.octaveOffset = 0;
         stream.getAudioTracks().forEach(track => {
-            track.addEventListener('ended', () => stopListening('The microphone was disconnected.'));
+            track.addEventListener('ended', () => {
+                // Ignore a stream that has already been replaced or closed.
+                if (mic.stream === stream) stopListening('The microphone was disconnected.');
+            });
         });
         trace.hasContent = true;
         requestFrame();
@@ -290,6 +335,13 @@ async function startListening() {
         renderMicButton();
         if (mic.analyser) renderMicStatus();
     }
+    // "Echo cancel" was flipped while the permission prompt was open.
+    if (mic.analyser && mic.echo !== settings.echoCancel) await restartListening();
+}
+
+function restartListening() {
+    stopListening();
+    return startListening();
 }
 
 function stopListening(message) {
@@ -302,8 +354,10 @@ function stopListening(message) {
     voice.result = null;
     voice.display = null;
     els.meter.classList.remove('is-live', 'is-open');
-    els.meterFill.style.width = '0%';
+    els.meterFill.style.transform = 'scaleX(0)';
+    shown.meterLevel = shown.meterGate = shown.meterOpen = undefined;
     renderMicButton();
+    scheduleIdleSuspend();
     if (message) setMicStatus(message, 'error');
     else renderMicStatus();
     requestFrame();
@@ -326,6 +380,10 @@ function micErrorMessage(err) {
 }
 
 function analyseMic(now) {
+    // One analysis per ~60 Hz frame is plenty; faster screens would only
+    // re-analyse nearly the same samples and change how the smoothing behaves.
+    if (now - mic.analysedAt < ANALYSIS_INTERVAL) return;
+    mic.analysedAt = now;
     mic.analyser.getFloatTimeDomainData(mic.buffer);
     const r = mic.tracker.process(mic.buffer, now);
     voice.result = r;
@@ -338,15 +396,26 @@ function analyseMic(now) {
         pushPoint(now, voice.display, voice.octaveOffset !== offset);
     }
 
-    const open = r.voiced;
-    els.meter.classList.add('is-live');
-    els.meter.classList.toggle('is-open', open);
-    els.meterFill.style.width = levelPercent(r.levelDb) + '%';
-    els.meterGate.style.left = levelPercent(r.gateDb) + '%';
+    // Transforms, and only when the value moved: no layout work per frame.
+    const level = Math.round(levelFraction(r.levelDb) * 100) / 100;
+    const gate = Math.round(levelFraction(r.gateDb) * 100);
+    if (shown.meterOpen !== r.voiced) {
+        shown.meterOpen = r.voiced;
+        els.meter.classList.add('is-live');
+        els.meter.classList.toggle('is-open', r.voiced);
+    }
+    if (shown.meterLevel !== level) {
+        shown.meterLevel = level;
+        els.meterFill.style.transform = `scaleX(${level})`;
+    }
+    if (shown.meterGate !== gate) {
+        shown.meterGate = gate;
+        els.meterGate.style.left = `${gate}%`;
+    }
 }
 
-function levelPercent(db) {
-    return clamp((db + 80) / 70, 0, 1) * 100;
+function levelFraction(db) {
+    return clamp((db + 80) / 70, 0, 1);
 }
 
 // With "Any octave" on, voices outside the chart are shifted by whole octaves
@@ -374,6 +443,7 @@ function nearestNote(midi) {
 
 let rafId = 0;
 let lastTick = 0;
+let idleAt = null; // while nothing is live the graph is frozen at this time
 
 function clock() {
     return performance.now() / 1000;
@@ -389,15 +459,33 @@ function tick(ms) {
     const dt = lastTick ? Math.min(0.1, Math.max(0, now - lastTick)) : 0;
     lastTick = now;
 
-    if (mic.analyser) analyseMic(now);
-    pruneTrace(now);
+    const live = !!mic.analyser || tone.index >= 0;
+    if (live) {
+        idleAt = null;
+        if (mic.analyser) analyseMic(now);
+        pruneTrace(now);
+    } else if (idleAt === null) {
+        idleAt = now;
+    }
     updateStage(now, dt);
-    drawStage(now);
-    drawTrace(now);
-    renderReadouts(now);
+    render(now);
 
-    if (mic.analyser || tone.index >= 0) requestFrame();
-    else lastTick = 0;
+    if (live) requestFrame();
+    else {
+        lastTick = 0;
+        // Come back once to clear a temporary notice.
+        if (stage.notice) setTimeout(requestFrame, Math.max(0, stage.noticeUntil - clock()) * 1000 + 30);
+    }
+}
+
+// Redraws that happen while idle (resize, fonts arriving) keep the graph where
+// it stopped instead of scrolling the history away.
+function render(now) {
+    if (stage.notice && clock() >= stage.noticeUntil) stage.notice = '';
+    const viewNow = idleAt === null ? now : idleAt;
+    drawStage(viewNow);
+    drawTrace(viewNow);
+    renderReadouts(viewNow);
 }
 
 function updateStage(now, dt) {
@@ -438,7 +526,10 @@ function updateStage(now, dt) {
 
     if (stage.progress >= 1 && !stage.locked) {
         stage.locked = true;
-        if (singing) announce(`${NOTES[index].name} held in tune`);
+        if (singing) {
+            announce(`${NOTES[index].name} held in tune`);
+            markDrawn(index);
+        }
     } else if (stage.progress < 0.6) {
         stage.locked = false;
     }
@@ -573,21 +664,32 @@ function shapeSvg(note) {
 // ---------------------------------------------------------------- drawing
 
 function makeView(canvas) {
-    return { canvas, ctx: canvas.getContext('2d'), width: 0, height: 0 };
+    return { canvas, ctx: canvas.getContext('2d'), width: 0, height: 0, dpr: 0 };
 }
 
 function fitView(view) {
     const rect = view.canvas.getBoundingClientRect();
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    view.width = Math.max(1, Math.round(rect.width));
-    view.height = Math.max(1, Math.round(rect.height));
-    view.canvas.width = Math.round(view.width * dpr);
-    view.canvas.height = Math.round(view.height * dpr);
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    // Assigning canvas.width clears it, so only do that for a real change.
+    if (width === view.width && height === view.height && dpr === view.dpr) return false;
+    view.width = width;
+    view.height = height;
+    view.dpr = dpr;
+    view.canvas.width = Math.round(width * dpr);
+    view.canvas.height = Math.round(height * dpr);
     view.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return true;
 }
 
 function drawStage(now) {
-    const { ctx, width: w, height: h } = views.stage;
+    const { ctx, width: w, height: h, dpr } = views.stage;
+    const pulsing = stage.locked && stage.index >= 0 && !reducedMotion.matches;
+    // While listening the stage is usually static: skip identical redraws.
+    const key = pulsing ? '' : `${w}x${h}@${dpr}|${stage.index}|${stage.lastIndex}|${stage.progress}|${stage.locked}`;
+    if (key && key === stage.drawnKey) return;
+    stage.drawnKey = key;
     ctx.clearRect(0, 0, w, h);
     const cx = w / 2;
     const cy = h / 2;
@@ -604,7 +706,7 @@ function drawStage(now) {
 
     const active = stage.index >= 0;
     const note = NOTES[active ? stage.index : stage.lastIndex];
-    const pulse = stage.locked && !reducedMotion.matches ? 0.5 + 0.5 * Math.sin(now * 4) : 0;
+    const pulse = pulsing ? 0.5 + 0.5 * Math.sin(now * 4) : 0;
 
     if (active) {
         const glow = ctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r * 1.7);
@@ -760,6 +862,7 @@ function drawTrace(now) {
             ctx.lineWidth = 2;
             ctx.stroke();
         }
+        drawHeadLabel(ctx, last, now, hx, hy, top, rgb);
     }
     ctx.restore();
 
@@ -770,6 +873,36 @@ function drawTrace(now) {
     ctx.moveTo(Math.round(right) + 0.5, top);
     ctx.lineTo(Math.round(right) + 0.5, bottom);
     ctx.stroke();
+}
+
+// A small tag beside the live point: the note you're on and how far off it is,
+// so you can read your tuning without looking away from the graph.
+function drawHeadLabel(ctx, point, now, hx, hy, top, rgb) {
+    if (now - voice.labelAt > 0.12 || !voice.label) {
+        voice.labelAt = now;
+        if (point.c >= 0) {
+            const cents = Math.round((point.m - NOTES[point.c].midi) * 100);
+            const off = Math.abs(cents) <= IN_TUNE_CENTS ? '' : ` ${cents > 0 ? '+' : '−'}${Math.abs(cents)}¢`;
+            voice.label = `${NOTES[point.c].swara}${off}`;
+        } else {
+            voice.label = point.m > GRAPH.high ? 'too high' : point.m < GRAPH.low ? 'too low' : 'between notes';
+        }
+    }
+    ctx.font = `700 11.5px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tw = Math.ceil(ctx.measureText(voice.label).width) + 16;
+    const th = 22;
+    const bx = hx - 16 - tw;
+    const by = hy - th - 10 < top - 8 ? hy + 10 : hy - th - 10; // flip below near the top edge
+    roundRect(ctx, bx, by, tw, th, 8);
+    ctx.fillStyle = 'rgba(9, 13, 25, 0.9)';
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(rgb, 0.7);
+    ctx.stroke();
+    ctx.fillStyle = rgba(rgb, 1);
+    ctx.fillText(voice.label, bx + tw / 2, by + th / 2 + 0.5);
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -833,7 +966,9 @@ function renderReadouts(now) {
     if (now - detailUpdatedAt > 0.12 || !singing) {
         detailUpdatedAt = now;
         let detail;
-        if (singing && note) {
+        if (stage.notice) {
+            detail = stage.notice;
+        } else if (singing && note) {
             const r = voice.result;
             detail = `${note.label} · you: ${r.freq.toFixed(1)} Hz (${midiToName(r.midi)})`;
         } else if (note && tone.index >= 0) {
@@ -857,7 +992,12 @@ function renderReadouts(now) {
         if (abs <= IN_TUNE_CENTS) tunerText = 'In tune';
         else if (abs <= 50) tunerText = `${cents > 0 ? '+' : '−'}${abs}¢ ${cents > 0 ? 'sharp' : 'flat'}`;
         else tunerText = cents < 0 ? 'Sing higher ↑' : 'Sing lower ↓';
-        els.tunerNeedle.style.left = `${50 + clamp(cents, -50, 50)}%`;
+        const offset = clamp(cents, -50, 50);
+        if (shown.needle !== offset) {
+            shown.needle = offset;
+            // The needle element spans the scale, so ±50% is either end.
+            els.tunerNeedle.style.transform = `translateX(${offset}%)`;
+        }
     }
     if (shown.tunerState !== tunerState) {
         shown.tunerState = tunerState;
@@ -870,7 +1010,24 @@ function renderReadouts(now) {
         els.keys.querySelectorAll('.key').forEach((key, i) => key.classList.toggle('is-sung', i === stage.sungIndex));
     }
 
-    els.traceEmpty.hidden = trace.hasContent;
+    if (shown.traceEmpty !== !trace.hasContent) {
+        shown.traceEmpty = !trace.hasContent;
+        els.traceEmpty.hidden = trace.hasContent;
+    }
+}
+
+function markDrawn(index) {
+    if (drawn.has(index)) return;
+    drawn.add(index);
+    const note = NOTES[index];
+    const key = els.keys.children[index];
+    key.classList.add('is-drawn');
+    key.setAttribute('aria-label', `${note.name}, ${note.swara}: ${note.label} (drawn)`);
+    els.drawnCount.hidden = false;
+    els.drawnCount.textContent = drawn.size === NOTES.length
+        ? 'All eight shapes drawn with your voice'
+        : `${drawn.size} of ${NOTES.length} shapes drawn with your voice`;
+    els.drawnCount.classList.toggle('is-complete', drawn.size === NOTES.length);
 }
 
 function renderKeys() {
@@ -883,6 +1040,8 @@ function renderKeys() {
 
 function renderScaleButton() {
     const running = tone.scaleTimer !== null;
+    if (shown.scaleRunning === running) return;
+    shown.scaleRunning = running;
     els.scaleBtn.setAttribute('aria-pressed', String(running));
     els.scaleBtn.querySelector('.btn-label').textContent = running ? 'Stop scale' : 'Play scale';
 }
@@ -984,8 +1143,7 @@ function bindControls() {
         saveSettings();
         if (mic.analyser) {
             // Echo cancellation is fixed when the stream opens, so reopen it.
-            stopListening();
-            await startListening();
+            await restartListening();
         } else {
             renderMicStatus();
         }
@@ -1004,8 +1162,11 @@ function bindControls() {
     els.scaleBtn.addEventListener('click', playScale);
     els.stopBtn.addEventListener('click', stopAll);
 
+    document.addEventListener('pointerdown', reviveAudio, { passive: true });
+    document.addEventListener('keydown', reviveAudio);
+
     document.addEventListener('keydown', e => {
-        if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+        if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || !e.key) return;
         if (e.target.closest('input[type="text"], textarea, [contenteditable="true"]')) return;
         const key = e.key.toLowerCase();
         if (key in KEY_TO_NOTE) {
@@ -1029,16 +1190,26 @@ function init() {
     renderMicButton();
     renderScaleButton();
 
+    // Redraw in the same frame as the resize: a resized canvas is blank, and
+    // waiting for the next animation frame shows that as a flicker.
     const refit = () => {
-        fitView(views.stage);
-        fitView(views.trace);
-        requestFrame();
+        const a = fitView(views.stage);
+        const b = fitView(views.trace);
+        if (a || b) render(clock());
     };
     refit();
     const observer = new ResizeObserver(refit);
     observer.observe(els.shapeCanvas);
     observer.observe(els.traceCanvas);
-    if (document.fonts) document.fonts.ready.then(requestFrame);
+    // Moving to a screen with another pixel density, or zooming, changes the
+    // resolution the canvases need without changing their CSS size.
+    const watchDensity = () => {
+        window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+            .addEventListener('change', () => { refit(); watchDensity(); }, { once: true });
+    };
+    watchDensity();
+    if (document.fonts) document.fonts.ready.then(() => { stage.drawnKey = ''; render(clock()); });
+    requestFrame();
 }
 
 // ---------------------------------------------------------------- helpers

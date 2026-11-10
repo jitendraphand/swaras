@@ -39,13 +39,28 @@ body {
     font-size: 15px;
     line-height: 1.5;
     color: var(--text);
+    background: var(--bg);
+    min-height: 100vh;
+    min-height: 100dvh;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* The backdrop glow sits on its own fixed layer. `background-attachment:
+   fixed` on the body repaints the whole page on every scroll frame. */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
     background:
         radial-gradient(1100px 600px at 0% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
-        radial-gradient(900px 520px at 100% 0%, rgba(236, 72, 153, 0.10), transparent 60%),
-        var(--bg);
-    background-attachment: fixed;
-    min-height: 100vh;
-    -webkit-font-smoothing: antialiased;
+        radial-gradient(900px 520px at 100% 0%, rgba(236, 72, 153, 0.10), transparent 60%);
+}
+
+button,
+label {
+    touch-action: manipulation; /* no double-tap zoom delay on controls */
 }
 
 button,
@@ -71,7 +86,7 @@ input {
 .app {
     max-width: 1180px;
     margin: 0 auto;
-    padding: 22px 20px 40px;
+    padding: 22px max(20px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
 }
 
 /* ---------- Top bar ---------- */
@@ -315,9 +330,20 @@ input {
     border: 1px solid rgba(74, 222, 128, 0.45);
 }
 
+/* Spans the scale and slides with a transform (no layout); the visible
+   needle is its ::after, so translateX(±50%) reaches either end. */
 .tuner-needle {
     position: absolute;
-    top: -6px;
+    inset: -6px 0;
+    pointer-events: none;
+    transition: transform 0.08s linear, opacity 0.2s;
+    will-change: transform;
+}
+
+.tuner-needle::after {
+    content: '';
+    position: absolute;
+    top: 0;
     left: 50%;
     width: 4px;
     height: 22px;
@@ -325,13 +351,13 @@ input {
     border-radius: 3px;
     background: var(--text);
     box-shadow: 0 0 0 2px var(--panel), 0 0 12px rgba(255, 255, 255, 0.4);
-    transition: left 0.08s linear, background 0.2s;
+    transition: background 0.2s;
 }
 
 .tuner[data-state="off"] .tuner-needle { opacity: 0; }
-.tuner[data-state="good"] .tuner-needle { background: var(--ok); box-shadow: 0 0 0 2px var(--panel), 0 0 14px var(--ok); }
-.tuner[data-state="close"] .tuner-needle { background: var(--warn); }
-.tuner[data-state="far"] .tuner-needle { background: var(--bad); }
+.tuner[data-state="good"] .tuner-needle::after { background: var(--ok); box-shadow: 0 0 0 2px var(--panel), 0 0 14px var(--ok); }
+.tuner[data-state="close"] .tuner-needle::after { background: var(--warn); }
+.tuner[data-state="far"] .tuner-needle::after { background: var(--bad); }
 
 .tuner-legend {
     display: flex;
@@ -352,6 +378,22 @@ input {
 .tuner[data-state="good"] .tuner-legend strong { color: var(--ok); }
 .tuner[data-state="close"] .tuner-legend strong { color: var(--warn); }
 .tuner[data-state="far"] .tuner-legend strong { color: var(--bad); }
+
+.drawn-count {
+    margin-top: 12px;
+    font-size: 12.5px;
+    color: var(--text-3);
+}
+
+.drawn-count::before {
+    content: '✓ ';
+    color: var(--ok);
+}
+
+.drawn-count.is-complete {
+    color: var(--ok);
+    font-weight: 600;
+}
 
 /* ---------- Trace (pitch graph) ---------- */
 
@@ -395,11 +437,12 @@ input {
 
 .meter-fill {
     position: absolute;
-    inset: 0 auto 0 0;
-    width: 0;
+    inset: 0;
     border-radius: inherit;
     background: var(--text-3);
-    transition: width 0.06s linear;
+    transform: scaleX(0);
+    transform-origin: left center;
+    transition: transform 0.06s linear;
 }
 
 .meter.is-open .meter-fill { background: var(--ok); }
@@ -580,13 +623,18 @@ input {
     transition: opacity 0.2s;
 }
 
-.key:hover {
-    transform: translateY(-2px);
-    border-color: color-mix(in srgb, var(--note) 55%, transparent);
+/* Hover lift only where there's a real pointer: on touch screens :hover
+   sticks to the last key tapped. */
+@media (hover: hover) {
+    .key:hover {
+        transform: translateY(-2px);
+        border-color: color-mix(in srgb, var(--note) 55%, transparent);
+    }
 }
 
 .key:active {
-    transform: translateY(0) scale(0.98);
+    transform: scale(0.96);
+    background: linear-gradient(180deg, var(--note-soft), transparent 85%), var(--panel-2);
 }
 
 .key-hint {
@@ -665,6 +713,26 @@ input {
 .key.is-sung {
     border-color: var(--note);
     box-shadow: inset 0 0 0 1px var(--note), 0 0 22px -6px var(--note);
+}
+
+/* Shape drawn by voice this session: filled in, with a tick for the number. */
+.key.is-drawn .key-shape polygon {
+    fill: var(--note-soft);
+}
+
+.key.is-drawn .key-shape {
+    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--note) 70%, transparent));
+}
+
+.key.is-drawn .key-hint {
+    font-size: 0;
+}
+
+.key.is-drawn .key-hint::after {
+    content: '✓';
+    font-size: 12px;
+    font-weight: 800;
+    color: var(--note);
 }
 
 .key.is-sung .key-voice {
@@ -783,9 +851,11 @@ input {
     transition: transform 0.12s, background 0.15s, border-color 0.15s, box-shadow 0.2s;
 }
 
-.btn:hover {
-    background: #222b45;
-    border-color: rgba(148, 163, 184, 0.35);
+@media (hover: hover) {
+    .btn:hover {
+        background: #222b45;
+        border-color: rgba(148, 163, 184, 0.35);
+    }
 }
 
 .btn:active {
@@ -821,13 +891,26 @@ input {
     box-shadow: 0 10px 24px -12px #8b5cf6;
 }
 
-.btn-primary:hover {
-    background: linear-gradient(135deg, #7174f5, #9a6cf8);
-    border-color: transparent;
+@media (hover: hover) {
+    .btn-primary:hover {
+        background: linear-gradient(135deg, #7174f5, #9a6cf8);
+        border-color: transparent;
+    }
 }
 
 .btn-primary[aria-pressed="true"] {
     background: linear-gradient(135deg, #4f46e5, #7c3aed);
+}
+
+.btn .icon-stop,
+.btn[aria-pressed="true"] .icon-play {
+    display: none;
+}
+
+.btn[aria-pressed="true"] .icon-stop {
+    display: block;
+    fill: currentColor;
+    stroke: none;
 }
 
 .btn-mic {
@@ -837,9 +920,16 @@ input {
     box-shadow: 0 10px 24px -12px #22c55e;
 }
 
-.btn-mic:hover {
-    background: linear-gradient(135deg, #1fc792, #34d36c);
-    border-color: transparent;
+@media (hover: hover) {
+    .btn-mic:hover {
+        background: linear-gradient(135deg, #1fc792, #34d36c);
+        border-color: transparent;
+    }
+
+    .btn-mic[aria-pressed="true"]:hover {
+        background: #222b45;
+        border-color: rgba(251, 113, 133, 0.7);
+    }
 }
 
 .btn-mic[aria-pressed="true"] {
@@ -956,8 +1046,38 @@ kbd {
             "trace";
     }
 
+    /* Shape beside its readout, so the keys stay on screen below it. */
+    .stage {
+        display: grid;
+        grid-template-columns: 200px minmax(0, 1fr);
+        grid-template-areas:
+            "head   head"
+            "visual readout";
+        column-gap: 20px;
+        align-items: center;
+    }
+
+    .stage .card-head { grid-area: head; }
+
     .stage-visual {
-        max-width: 260px;
+        grid-area: visual;
+        max-width: none;
+    }
+
+    .stage-readout {
+        grid-area: readout;
+        padding-top: 0;
+        text-align: left;
+    }
+
+    .stage-title {
+        justify-content: flex-start;
+        min-height: 0;
+    }
+
+    .tuner {
+        margin: 12px 0 0;
+        max-width: 420px;
     }
 
     .brand-tag span {
@@ -967,7 +1087,28 @@ kbd {
 
 @media (max-width: 640px) {
     .app {
-        padding: 14px 12px 28px;
+        padding: 14px max(12px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    }
+
+    .stage {
+        grid-template-columns: 124px minmax(0, 1fr);
+        column-gap: 14px;
+    }
+
+    .stage-visual {
+        border-radius: 14px;
+    }
+
+    .stage-swara {
+        font-size: 17px;
+    }
+
+    .stage-detail {
+        font-size: 13px;
+    }
+
+    .drawn-count {
+        margin-top: 8px;
     }
 
     .topbar {
@@ -1077,6 +1218,42 @@ kbd {
 @media (hover: none) {
     .shortcuts {
         display: none;
+    }
+}
+
+/* Finger-sized switches and sliders. */
+@media (pointer: coarse) {
+    .toggle {
+        min-height: 36px;
+    }
+
+    .toggle-ui {
+        width: 40px;
+        height: 24px;
+    }
+
+    .toggle-ui::after {
+        width: 18px;
+        height: 18px;
+    }
+
+    .toggle input:checked + .toggle-ui::after {
+        transform: translateX(16px);
+    }
+
+    input[type="range"] {
+        height: 36px;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+        width: 22px;
+        height: 22px;
+        margin-top: -8.5px;
+    }
+
+    input[type="range"]::-moz-range-thumb {
+        width: 22px;
+        height: 22px;
     }
 }
 

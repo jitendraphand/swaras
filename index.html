@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#070a12">
     <meta name="description" content="Swaras pairs every note of the scale with a geometric shape. Play tones, sing along and watch your pitch drawn live.">
-    <title>Swaras — Tones & Shapes</title>
+    <title>Swaras — Tones &amp; Shapes</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3.5l9.4 4.5 2.3 10.2-6.5 8.1H10.8l-6.5-8.1L6.6 8z' fill='none' stroke='%23f472b6' stroke-width='2.6' stroke-linejoin='round'/%3E%3Ccircle cx='16' cy='16.5' r='3.2' fill='%23f87171'/%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,6 +54,7 @@
                             <span>sharp ♯</span>
                         </div>
                     </div>
+                    <p class="drawn-count" id="drawnCount" hidden></p>
                 </div>
             </section>
 
@@ -128,6 +129,7 @@
                     <div class="transport-buttons">
                         <button type="button" class="btn btn-primary" id="scaleBtn">
                             <svg class="icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>
+                            <svg class="icon icon-stop" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
                             <span class="btn-label">Play scale</span>
                         </button>
                         <button type="button" class="btn" id="stopBtn">
@@ -144,7 +146,7 @@
                 <kbd>1</kbd>–<kbd>8</kbd> play a note <span aria-hidden="true">·</span>
                 <kbd>P</kbd> play scale <span aria-hidden="true">·</span>
                 <kbd>M</kbd> microphone <span aria-hidden="true">·</span>
-                <kbd>Esc</kbd> stop
+                <kbd>Esc</kbd> or <kbd>Space</kbd> stop
             </p>
             <p>Equal temperament, A4 = 440 Hz · Built with the Web Audio API · <a href="https://github.com/jitendraphand/Swaras" target="_blank" rel="noopener">Source on GitHub</a></p>
         </footer>

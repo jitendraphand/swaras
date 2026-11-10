@@ -24,11 +24,12 @@ Each step up the scale adds one side to the shape:
 - **Waveforms** — Sine, Triangle, Saw, Square, loudness-matched and switchable while a note plays.
 - **Live pitch trace** — a scrolling graph with one lane per note. Your voice is drawn as a line coloured by the note it is closest to, so slides (meend), vibrato and drifting off-pitch are easy to see.
 - **Sing along** — notes you play appear on the graph as target bars; the stage measures your voice against the playing note and the tuner shows how many cents flat or sharp you are.
-- **Sing to draw** — with the mic on, holding a note in tune for about a second draws its shape.
+- **Sing to draw** — with the mic on, holding a note in tune for about a second draws its shape. Drawn shapes are ticked off on the keys — try to collect all eight.
+- **Live tuning tag** — a label beside the moving point shows the swara you're on and how many cents off, so you can keep your eyes on the graph.
 - **Any octave** — higher and lower voices are folded onto the C3–C4 lanes, so everyone can practise the same notes.
 - Settings are remembered between visits. No dependencies — pure HTML/CSS/JS.
 
-Keyboard: <kbd>1</kbd>–<kbd>8</kbd> (or C D E F G A B H) play a note · <kbd>P</kbd> play scale · <kbd>M</kbd> microphone · <kbd>Esc</kbd> stop.
+Keyboard: <kbd>1</kbd>–<kbd>8</kbd> (or C D E F G A B H) play a note · <kbd>P</kbd> play scale · <kbd>M</kbd> microphone · <kbd>Esc</kbd> or <kbd>Space</kbd> stop.
 
 ## How pitch detection works
 
@@ -36,7 +37,7 @@ Keyboard: <kbd>1</kbd>–<kbd>8</kbd> (or C D E F G A B H) play a note · <kbd>P
 
 1. **Raw audio.** The browser's call-processing (noise suppression, auto gain) is switched off. Noise suppression treats a held note as noise and fades it out, which made detection drop out mid-note.
 2. **Band-pass filter** (70 Hz – 1.4 kHz) removes rumble, mains hum and hiss before analysis.
-3. **McLeod Pitch Method** estimates the pitch and a *clarity* score — how periodic the sound is. Voices and instruments score high; fans, traffic, typing and breath noise score low and are ignored.
+3. **McLeod Pitch Method** (run on a 2× down-sampled copy of the band-limited signal, which is about four times cheaper and just as accurate) estimates the pitch and a *clarity* score — how periodic the sound is. Voices and instruments score high; fans, traffic, typing and breath noise score low and are ignored.
 4. **Adaptive noise gate** learns the room's background level and only opens a few dB above it (adjust with *Sensitivity*).
 5. **Smoothing** — a new note must be consistent for two frames; short dropouts (consonants) are held over for 150 ms; a median filter removes stray octave jumps.
 
