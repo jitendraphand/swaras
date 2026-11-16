@@ -102,38 +102,52 @@
             <section class="card deck" aria-label="Notes and playback">
                 <div class="keys" id="keys" role="group" aria-label="Notes"></div>
                 <div class="transport">
-                    <div class="segmented" role="radiogroup" aria-label="Waveform" id="waveform">
-                        <label title="Pure and soft">
-                            <input type="radio" name="wave" value="sine" checked>
-                            <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 6c2.75-6.5 5.25-6.5 8 0s5.25 6.5 8 0 3.5-4 6-3"/></svg>Sine</span>
-                        </label>
-                        <label title="Mellow, flute-like">
-                            <input type="radio" name="wave" value="triangle">
-                            <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 6l4-5 7 10 7-10 4 5"/></svg>Triangle</span>
-                        </label>
-                        <label title="Bright and buzzy">
-                            <input type="radio" name="wave" value="sawtooth">
-                            <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 11l10-10v10l10-10v10"/></svg>Saw</span>
-                        </label>
-                        <label title="Hollow, reedy">
-                            <input type="radio" name="wave" value="square">
-                            <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 11V1h7v10h7V1h7v10"/></svg>Square</span>
+                    <div class="transport-group" role="group" aria-label="Sound">
+                        <div class="segmented" role="radiogroup" aria-label="Waveform" id="waveform">
+                            <label title="Pure and soft">
+                                <input type="radio" name="wave" value="sine" checked>
+                                <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 6c2.75-6.5 5.25-6.5 8 0s5.25 6.5 8 0 3.5-4 6-3"/></svg>Sine</span>
+                            </label>
+                            <label title="Mellow, flute-like">
+                                <input type="radio" name="wave" value="triangle">
+                                <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 6l4-5 7 10 7-10 4 5"/></svg>Triangle</span>
+                            </label>
+                            <label title="Bright and buzzy">
+                                <input type="radio" name="wave" value="sawtooth">
+                                <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 11l10-10v10l10-10v10"/></svg>Saw</span>
+                            </label>
+                            <label title="Hollow, reedy">
+                                <input type="radio" name="wave" value="square">
+                                <span><svg viewBox="0 0 24 12" aria-hidden="true"><path d="M1 11V1h7v10h7V1h7v10"/></svg>Square</span>
+                            </label>
+                        </div>
+                        <label class="volume">
+                            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
+                            <input type="range" id="volume" min="0" max="1" step="0.01" value="0.6" aria-label="Volume">
+                            <output id="volumeValue" for="volume">60%</output>
                         </label>
                     </div>
-                    <label class="volume">
-                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
-                        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.6" aria-label="Volume">
-                        <output id="volumeValue" for="volume">60%</output>
-                    </label>
-                    <div class="transport-buttons">
-                        <button type="button" class="btn btn-primary" id="scaleBtn">
-                            <svg class="icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>
-                            <span class="btn-label">Play scale</span>
-                        </button>
-                        <button type="button" class="btn" id="stopBtn">
-                            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-                            <span>Stop</span>
-                        </button>
+                    <div class="transport-group transport-scale" role="group" aria-label="Scale playback">
+                        <label class="note-length" title="How long each note of the scale plays">
+                            <span>Each note</span>
+                            <input type="range" id="noteLength" min="0.25" max="5" step="0.25" value="1">
+                            <output id="noteLengthValue" for="noteLength">1 s</output>
+                        </label>
+                        <label class="toggle" title="Keep repeating the scale until you stop it">
+                            <input type="checkbox" id="optLoop">
+                            <span class="toggle-ui" aria-hidden="true"></span>
+                            <span>Loop</span>
+                        </label>
+                        <div class="transport-buttons">
+                            <button type="button" class="btn btn-primary" id="scaleBtn">
+                                <svg class="icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5z"/></svg>
+                                <span class="btn-label">Play scale</span>
+                            </button>
+                            <button type="button" class="btn" id="stopBtn">
+                                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                                <span>Stop</span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -143,6 +157,7 @@
             <p class="shortcuts">
                 <kbd>1</kbd>–<kbd>8</kbd> play a note <span aria-hidden="true">·</span>
                 <kbd>P</kbd> play scale <span aria-hidden="true">·</span>
+                <kbd>L</kbd> loop <span aria-hidden="true">·</span>
                 <kbd>M</kbd> microphone <span aria-hidden="true">·</span>
                 <kbd>Esc</kbd> stop
             </p>
