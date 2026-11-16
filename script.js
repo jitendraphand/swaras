@@ -18,7 +18,8 @@ const NOTE_MIDIS = new Set(NOTES.map(n => n.midi));
 const KEY_TO_NOTE = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, c: 0, d: 1, e: 2, f: 3, g: 4, a: 5, b: 6, h: 7 };
 
 const WAVE_LEVEL = { sine: 0.9, triangle: 0.8, sawtooth: 0.4, square: 0.34 }; // roughly equal loudness
-const SCALE_STEP_MS = 850;
+const NOTE_LENGTH = { min: 0.25, max: 5, step: 0.25 }; // seconds each scale note plays
+const SCALE_STARTING = -1;     // tone.scaleTimer while the scale waits for audio to start
 const DRAW_IN_SECONDS = 0.7;   // how long a played note takes to draw its shape
 const HOLD_TO_DRAW = 1.0;      // seconds of in-tune singing that completes a shape
 const IN_TUNE_CENTS = 15;
@@ -57,13 +58,16 @@ const els = {
     waveform: $('waveform'),
     volume: $('volume'),
     volumeValue: $('volumeValue'),
+    noteLength: $('noteLength'),
+    noteLengthValue: $('noteLengthValue'),
+    optLoop: $('optLoop'),
     scaleBtn: $('scaleBtn'),
     stopBtn: $('stopBtn'),
     announcer: $('announcer')
 };
 
 const audio = { ctx: null, master: null, voice: null };
-const tone = { index: -1, startedAt: 0, token: 0, scaleTimer: null };
+const tone = { index: -1, startedAt: 0, token: 0, scaleTimer: null, step: 0, stepStartedAt: 0 };
 const mic = { stream: null, nodes: [], analyser: null, buffer: null, tracker: null, starting: false };
 const voice = { result: null, display: null, octaveOffset: 0, lastFreshAt: -Infinity };
 const trace = { points: [], bars: [], hasContent: false };
@@ -73,7 +77,7 @@ const views = { stage: makeView(els.shapeCanvas), trace: makeView(els.traceCanva
 // ---------------------------------------------------------------- settings
 
 function loadSettings() {
-    const defaults = { waveform: 'sine', volume: 0.6, anyOctave: true, echoCancel: false, sensitivity: 0.5 };
+    const defaults = { waveform: 'sine', volume: 0.6, anyOctave: true, echoCancel: false, sensitivity: 0.5, noteLength: 1, loop: false };
     try {
         const saved = JSON.parse(localStorage.getItem('swaras.settings')) || {};
         if (saved.waveform in WAVE_LEVEL) defaults.waveform = saved.waveform;
@@ -81,6 +85,11 @@ function loadSettings() {
         if (typeof saved.echoCancel === 'boolean') defaults.echoCancel = saved.echoCancel;
         if (Number.isFinite(saved.volume)) defaults.volume = clamp(saved.volume, 0, 1);
         if (Number.isFinite(saved.sensitivity)) defaults.sensitivity = clamp(saved.sensitivity, 0, 1);
+        if (Number.isFinite(saved.noteLength)) {
+            const snapped = Math.round(saved.noteLength / NOTE_LENGTH.step) * NOTE_LENGTH.step;
+            defaults.noteLength = clamp(snapped, NOTE_LENGTH.min, NOTE_LENGTH.max);
+        }
+        if (typeof saved.loop === 'boolean') defaults.loop = saved.loop;
     } catch (err) {
         // Storage unavailable (private mode etc.) — defaults are fine.
     }
@@ -199,24 +208,50 @@ function setTone(index) {
     requestFrame();
 }
 
-function playScale() {
+async function playScale() {
     if (tone.scaleTimer !== null) {
         stopAll();
         return;
     }
-    let i = 0;
-    const step = () => {
-        if (i < NOTES.length) {
-            startTone(i++, true);
-            tone.scaleTimer = setTimeout(step, SCALE_STEP_MS);
-        } else {
+    // Marks the scale as running while audio starts up, so the first note's
+    // timer only begins once it can actually sound.
+    tone.scaleTimer = SCALE_STARTING;
+    renderScaleButton();
+    try {
+        await ensureAudio();
+    } catch (err) {
+        // startTone reports the problem on the stage.
+    }
+    if (tone.scaleTimer !== SCALE_STARTING) return; // stopped while audio was starting
+    tone.step = 0;
+    tone.stepStartedAt = 0;
+    advanceScale();
+}
+
+// Play the next note of the scale; after the last one, start over if looping.
+function advanceScale() {
+    if (tone.step >= NOTES.length) {
+        if (!settings.loop) {
             tone.scaleTimer = null;
             stopTone();
             renderScaleButton();
+            return;
         }
-    };
-    step();
-    renderScaleButton();
+        tone.step = 0;
+    }
+    startTone(tone.step++, true);
+    // Time each note from when it was due, not when the timer fired, so a long
+    // loop doesn't drift; start afresh if we fell well behind (e.g. a busy tab).
+    const now = performance.now();
+    const due = tone.stepStartedAt + settings.noteLength * 1000;
+    tone.stepStartedAt = tone.stepStartedAt && now - due < 100 ? due : now;
+    scheduleScaleStep();
+}
+
+function scheduleScaleStep() {
+    clearTimeout(tone.scaleTimer);
+    const delay = tone.stepStartedAt + settings.noteLength * 1000 - performance.now();
+    tone.scaleTimer = setTimeout(advanceScale, Math.max(0, delay));
 }
 
 function stopScale() {
@@ -887,6 +922,11 @@ function renderScaleButton() {
     els.scaleBtn.querySelector('.btn-label').textContent = running ? 'Stop scale' : 'Play scale';
 }
 
+function renderNoteLength() {
+    els.noteLengthValue.textContent = `${settings.noteLength} s`;
+    syncRangeFill(els.noteLength);
+}
+
 function renderMicButton() {
     const on = !!mic.analyser;
     els.micBtn.setAttribute('aria-pressed', String(on));
@@ -991,6 +1031,22 @@ function bindControls() {
         }
     });
 
+    els.noteLength.value = settings.noteLength;
+    renderNoteLength();
+    els.noteLength.addEventListener('input', () => {
+        settings.noteLength = parseFloat(els.noteLength.value);
+        renderNoteLength();
+        // The sounding note gets the new length too.
+        if (tone.scaleTimer !== null && tone.scaleTimer !== SCALE_STARTING) scheduleScaleStep();
+        saveSettings();
+    });
+
+    els.optLoop.checked = settings.loop;
+    els.optLoop.addEventListener('change', () => {
+        settings.loop = els.optLoop.checked;
+        saveSettings();
+    });
+
     els.optSensitivity.value = settings.sensitivity;
     syncRangeFill(els.optSensitivity);
     els.optSensitivity.addEventListener('input', () => {
@@ -1019,6 +1075,8 @@ function bindControls() {
             toggleListening();
         } else if (key === 'p') {
             playScale();
+        } else if (key === 'l') {
+            els.optLoop.click();
         }
     });
 }

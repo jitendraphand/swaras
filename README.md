@@ -20,7 +20,7 @@ Each step up the scale adds one side to the shape:
 ## Features
 
 - **Play notes** — tap a note (or press <kbd>1</kbd>–<kbd>8</kbd>) for a continuous tone; its shape draws itself on the stage. Tap again to stop.
-- **Play scale** — ascending Sa to Ṡa.
+- **Play scale** — ascending Sa to Ṡa. Set how long each note plays (*Each note*, 0.25–5 s), and turn on *Loop* to keep repeating the scale until you stop it — handy for sing-along practice with the mic on.
 - **Waveforms** — Sine, Triangle, Saw, Square, loudness-matched and switchable while a note plays.
 - **Live pitch trace** — a scrolling graph with one lane per note. Your voice is drawn as a line coloured by the note it is closest to, so slides (meend), vibrato and drifting off-pitch are easy to see.
 - **Sing along** — notes you play appear on the graph as target bars; the stage measures your voice against the playing note and the tuner shows how many cents flat or sharp you are.
@@ -28,7 +28,7 @@ Each step up the scale adds one side to the shape:
 - **Any octave** — higher and lower voices are folded onto the C3–C4 lanes, so everyone can practise the same notes.
 - Settings are remembered between visits. No dependencies — pure HTML/CSS/JS.
 
-Keyboard: <kbd>1</kbd>–<kbd>8</kbd> (or C D E F G A B H) play a note · <kbd>P</kbd> play scale · <kbd>M</kbd> microphone · <kbd>Esc</kbd> stop.
+Keyboard: <kbd>1</kbd>–<kbd>8</kbd> (or C D E F G A B H) play a note · <kbd>P</kbd> play scale · <kbd>L</kbd> loop on/off · <kbd>M</kbd> microphone · <kbd>Esc</kbd> stop.
 
 ## How pitch detection works
 
